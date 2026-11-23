@@ -1,0 +1,9 @@
+# Disables the integrated USB Bluetooth module of the Intel Dual Band Wireless-AC 7260 (USB 8087:07dc).
+# This ensures the dedicated ThinkPad Bluetooth daughter card (Broadcom BDC-4.0) with its separate
+# internal display antenna is used exclusively, preventing 2.4 GHz interference and dual-adapter conflicts.
+#
+# Installation:
+#   sudo cp configs/81-disable-intel-bt.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="8087", ATTR{idProduct}=="07dc", ATTR{authorized}="0"

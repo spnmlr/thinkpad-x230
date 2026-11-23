@@ -1,0 +1,42 @@
+name: CI & Script Verification
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Verify Shell Scripts (Syntax & ShellCheck)
+        run: |
+          set -euo pipefail
+          while IFS= read -r -d '' script; do
+            echo "Checking: $script"
+            bash -n "$script"
+            shellcheck "$script"
+          done < <(find . -path './thinkpad-ec' -prune -o -name '*.sh' -print0)
+
+      - name: Verify Python Script Syntax & CLI
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/patch_battery_bypass.py
+          python3 scripts/patch_battery_bypass.py --help >/dev/null
+
+      - name: Verify PKGBUILD Patch Checksum (b2sum)
+        run: |
+          set -euo pipefail
+          actual="$(b2sum fingerprint/libfprint-upektc-fix.patch | awk '{print $1}')"
+          grep -Fq "'${actual}'" fingerprint/PKGBUILD || {
+            echo "ERROR: b2sum mismatch for fingerprint/libfprint-upektc-fix.patch ($actual)" >&2
+            exit 1
+          }
+          echo "OK: PKGBUILD b2sum matches fingerprint/libfprint-upektc-fix.patch"

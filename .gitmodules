@@ -1,0 +1,3 @@
+[submodule "thinkpad-ec"]
+	path = thinkpad-ec
+	url = https://github.com/hamishcoleman/thinkpad-ec.git

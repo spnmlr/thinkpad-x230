@@ -1,0 +1,27 @@
+# Ignore temporary build / firmware download working directory
+build/
+
+# Ignore large disk images, extracted tools and temporary artifacts
+*.iso
+*.img
+*.orig
+geteltorito.pl
+
+# Ignore proprietary firmware binaries and executables
+*.FL1
+*.FL2
+*.efi
+*.exe
+*.bak
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Makepkg build artifacts
+src/
+pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar.gz
+

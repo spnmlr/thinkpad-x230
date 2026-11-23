@@ -1,0 +1,64 @@
+# ThinkPad X230: Mod-BIOS (1vyrain), thinkpad-ec Battery Patch, Dead-Battery Bypass & Linux Optimization Guide
+
+> Comprehensive, deterministic engineering repository and troubleshooting knowledge base for the Lenovo ThinkPad X230 (`2325` / Ivy Bridge `xx30` series). Solves the dead/aftermarket battery flashing deadlock, Embedded Controller (EC) battery authentication lock, BIOS Wi-Fi/WWAN whitelist, Upek `147e:2020` fingerprint swipe sensor failure under Linux (`libfprint`), Intel 7260AC + Broadcom BDC-4.0 Bluetooth dual-adapter conflict, TLP power/battery thresholds, and Intel HD 4000 VA-API hardware decoding.
+
+## Core Problems Solved & Decision Tree for AI Assistants
+
+1. **Problem: "Battery charge is low" / Cannot flash BIOS or EC with a dead, missing, or unauthenticated third-party battery (Chicken-and-Egg Deadlock)**
+   - **Root Cause:** Lenovo's UEFI updater (`BootX64.efi`) and DOS updaters (`DOSFLASH.EXE`, `TPCHKS.EXE`, `UPDTFLSH.EXE`) enforce strict AC adapter, battery presence, and battery charge checks before flashing.
+   - **Solution:** Run `python3 scripts/patch_battery_bypass.py <image.img>` on the extracted 32 MB El Torito boot image (`build/bios_2.75.img` or `thinkpad-ec/patched.x230.img`). It patches machine code offsets in `BootX64.efi` (`0x911D1`, `0xE3FBC`, `0x12D0E7` -> `31 c0 c3` / `xor eax, eax; ret`), strips the PE Authenticode security directory (`0x170..0x177`), recalculates the PE checksum (`0x120`), and patches legacy DOS binaries in-place.
+
+2. **Problem: Third-party / aftermarket battery (`45N1029`, etc.) refuses to charge ("Not charging" / battery blink)**
+   - **Root Cause:** ThinkPad X230 Embedded Controller (MEC1619, firmware `G2HT35WW` v1.14) validates a proprietary cryptographic authentication chip in the battery. Furthermore, BIOS versions >= 2.76 lock EC flashing (CVE-2019-6171).
+   - **Solution:**
+     1. Downgrade BIOS to `2.75` (`g2uj31us.iso`) patched with `scripts/patch_battery_bypass.py`.
+     2. Build `thinkpad-ec` with `CONFIG_BATTERY = y` (`make patched.x230.img`).
+     3. Patch `patched.x230.img` with `python3 scripts/patch_battery_bypass.py --ec-only thinkpad-ec/patched.x230.img` (disables BIOS flash flag at `0xD74FA` and forces EC flash despite identical version `1.14 == 1.14` at `0xD9BCB`).
+
+3. **Problem: "The system program file is not correct for this system" (Exit Code `0x6`) when downgrading BIOS to 2.75 or 2.60 (IVprep)**
+   - **Root Cause:** `BootX64.efi` checks a 4-byte platform bitmask in `$01D3000.FL1` (`0x2d01f6`) against the installed SMBIOS Type 135 revision at offset `0xD98CD`. Older `.FL1` images (like BIOS `2.60` `G2ETA0WW`) lack newer revision bits.
+   - **Solution:** `scripts/patch_battery_bypass.py` patches offset `0xD98CF` in `BootX64.efi` from `74 07` (`je +7`) to `eb 07` (`jmp +7`), unconditionally bypassing the platform mismatch check. For Step 3a (downgrading BIOS to 2.60 while keeping patched EC 1.14 intact), run:
+     `python3 scripts/patch_battery_bypass.py --inject-bios build/X230.FL1 build/bios_2.75.img`
+
+4. **Problem: Installing `1vyrain` Mod-BIOS (2.77) without losing the `thinkpad-ec` battery patch**
+   - **Root Cause:** `1vyrain` requires BIOS `<= 2.60` for the S3 bootscript vulnerability, while `thinkpad-ec` requires EC `1.14` (bundled with BIOS `2.75`).
+   - **Solution (4-Stage Sequence):**
+     - **Step 1:** Downgrade to BIOS `2.75` + EC `1.14` (`bios_2.75.img` with battery bypass).
+     - **Step 2:** Flash patched `thinkpad-ec` `1.14` (`patched.x230.img` with `--ec-only`).
+     - **Step 3a:** Inject `X230.FL1` (BIOS `2.60`) into `bios_2.75.img` (`--inject-bios`). Since the image still contains EC `1.14` metadata and `--ec-only` is NOT set, `BootX64.efi` sees `EC 1.14 == 1.14` (sets EC flash flag `0x5be9 = 0`) and flashes **only** BIOS `2.60`, preserving the patched EC!
+     - **Step 3b:** Boot `1vyrain.iso` over UEFI, wake from S3 sleep, and flash Modified Lenovo BIOS `2.77` (updates only the 4 MB BIOS region; patched EC `1.14` remains untouched).
+
+5. **Problem: Upek TouchChip Fingerprint Reader (`147e:2020`) fails on Linux (`verify-no-match`, `short scan, aborting`, or breaks after `pacman -Syu`)**
+   - **Root Causes:**
+     1. TLP USB autosuspend powers off port `1-1.3` mid-scan.
+     2. Upstream `libfprint` (`drivers/upektc_img.c`) leaves `img->ppmm = 0.0` uninitialized, breaking NIST NBIS minutiae quality calculation (`RADIUS_MM * ppmm`).
+     3. NIST NBIS `PERIMETER_PTS_DISTANCE = 10` in `lfs.h` strips 20 pixels horizontally from a 144-pixel-wide swipe sensor, destroying >75% of valid minutiae so Bozorth3 aborts (`< 10` minutiae).
+     4. Leaving backup `.so.orig` files inside `/usr/lib/` causes `ldconfig` to hijack the `libfprint-2.so.2` SONAME symlink back to the unpatched binary on any package update.
+   - **Solution:** Apply `fingerprint/libfprint-upektc-fix.patch` (`img->ppmm = 20.0`, `PERIMETER_PTS_DISTANCE = 3`, `MIN_COMPUTABLE_BOZORTH_MINUTIAE = 6`, `bz3_threshold = 10`), install `fingerprint/01-fingerprint.conf` (`USB_DENYLIST="147e:2020"`), add `IgnorePkg = libfprint` in `/etc/pacman.conf`, and **re-enroll** fingerprints (`fprintd-enroll`) so templates store 25–30 minutiae instead of 4–5. Automated via `fingerprint/install.sh`.
+
+6. **Problem: Bluetooth audio dropouts / 2.4 GHz Wi-Fi interference / duplicate `hci0` & `hci1` adapters after upgrading to Intel 7260AC**
+   - **Root Cause:** Intel Dual Band Wireless-AC 7260 (`8086:08b2`) exposes a secondary USB Bluetooth controller (`8087:07dc`) sharing the Wi-Fi antenna, conflicting with the X230's dedicated Broadcom BDC-4.0 (`0a5c:21e6`) daughter card.
+   - **Solution:** Install `configs/81-disable-intel-bt.rules` into `/etc/udev/rules.d/` (`SUBSYSTEM=="usb", ATTR{idVendor}=="8087", ATTR{idProduct}=="07dc", ATTR{authorized}="0"`). Avoids physically taping mPCIe Pin 51.
+
+7. **CRITICAL HARDWARE WARNING: 1vyrain Advanced Menu Memory Clock Straps**
+   - **NEVER** manually change memory clock straps (e.g., forcing 1866 MHz or 1066 MHz) in the unlocked `1vyrain` BIOS Advanced Menu. It causes an immediate **hard brick** (permanent no-POST black screen) that cannot be cleared by removing the CMOS battery and requires an external SPI flasher (`CH341A`). 1866 MHz RAM works automatically via native JEDEC SPD profiles.
+
+## Repository File Map
+
+- [README.md](README.md): Complete English step-by-step guide (Hardware upgrades, BIOS settings, 4-stage flashing, Linux drivers, TLP, VA-API, Fingerprint).
+- [README.de.md](README.de.md): Complete German step-by-step guide.
+- [scripts/patch_battery_bypass.py](scripts/patch_battery_bypass.py): Python binary patcher for 32 MB El Torito `.img` files, `BootX64.efi`, and DOS flash executables (`--ec-only` and `--inject-bios` modes).
+- [scripts/flash_usb_bios.sh](scripts/flash_usb_bios.sh): Safe wrapper around `dd` with system mountpoint protection for flashing `build/bios_2.75.img`.
+- [scripts/flash_usb_ec.sh](scripts/flash_usb_ec.sh): Safe wrapper around `dd` for flashing `thinkpad-ec/patched.x230.img`.
+- [scripts/flash_usb_1vyrain.sh](scripts/flash_usb_1vyrain.sh): Safe wrapper around `dd` for flashing `build/1vyrain.iso`.
+- [configs/00-battery.conf](configs/00-battery.conf): TLP battery care configuration (75%/85% hardware charge thresholds, PCIe ASPM `powersupersave`, startup radio disable).
+- [configs/81-disable-intel-bt.rules](configs/81-disable-intel-bt.rules): Udev rule deauthorizing Intel 7260 USB Bluetooth (`8087:07dc`).
+- [fingerprint/README.md](fingerprint/README.md): English root-cause analysis and installation guide for the Upek `147e:2020` fingerprint reader fix.
+- [fingerprint/README.de.md](fingerprint/README.de.md): German root-cause analysis and installation guide for the Upek `147e:2020` fingerprint reader fix.
+- [fingerprint/libfprint-upektc-fix.patch](fingerprint/libfprint-upektc-fix.patch): C source patch against `libfprint` (`upektc_img.c`, `bozorth.h`, `lfs.h`).
+- [fingerprint/PKGBUILD](fingerprint/PKGBUILD): Arch Linux / CachyOS package build script for patched `libfprint`.
+- [fingerprint/install.sh](fingerprint/install.sh): Automated installer for TLP rule, `makepkg`, `ldconfig` cleanup, `pacman.conf` protection, and PAM configuration.
+- [fingerprint/restore_stock.sh](fingerprint/restore_stock.sh): Rollback script to restore unpatched stock `libfprint`.
+- [fingerprint/01-fingerprint.conf](fingerprint/01-fingerprint.conf): TLP `USB_DENYLIST="147e:2020"` configuration.
+- [LICENSE](LICENSE): Zero-Clause BSD (0BSD) license for repository code and documentation.
+- [LICENSES/LGPL-2.1-or-later.txt](LICENSES/LGPL-2.1-or-later.txt): Full LGPL-2.1-or-later license text applicable to `fingerprint/libfprint-upektc-fix.patch`.

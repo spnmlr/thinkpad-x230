@@ -1,0 +1,66 @@
+# Arch Linux / CachyOS build recipe for libfprint with Upek TCS4x (147e:2020) patch
+# Upstream packaging reference: https://gitlab.archlinux.org/archlinux/packaging/packages/libfprint
+# Upstream source: https://gitlab.freedesktop.org/libfprint/libfprint
+
+pkgname=libfprint
+pkgver=1.94.100
+pkgrel=2.1
+pkgdesc="Library for fingerprint readers (Patched for ThinkPad X230 / Upek TCS4x 147e:2020)"
+url="https://fprint.freedesktop.org/"
+arch=(x86_64)
+license=(LGPL-2.1-or-later)
+depends=(
+  libgcc
+  glib2
+  glibc
+  libgudev
+  libgusb
+  openssl
+  pixman
+)
+makedepends=(
+  git
+  glib2-devel
+  gobject-introspection
+  gtk-doc
+  meson
+  python-cairo
+  python-gobject
+  systemd
+)
+checkdepends=(
+  cairo
+  umockdev
+)
+provides=(libfprint-2.so)
+groups=(fprint)
+# Source tree integrity is verified via makepkg's Git b2sums hash below
+source=(
+  "git+https://gitlab.freedesktop.org/libfprint/libfprint.git#tag=v$pkgver"
+  "libfprint-upektc-fix.patch"
+)
+b2sums=('56cbe62a6d4b98d1de90f45bae8de605418802d1b4d8d5dc55a8557a65045b115df51daf8385decdebd8aea79c86103467d5a327cbd461030d450f0e15466d08'
+        'a235c8cace5a6109726f9b622de73671709ad7ce0e0f9a8672de5fd45c27b617c9cf6a5e10fedbc837c09e23c8cc614f8bb6471b8fda8cdad5f4424b5617c92f')
+
+prepare() {
+  cd $pkgname
+  patch -Np1 -i "$srcdir/libfprint-upektc-fix.patch"
+}
+
+build() {
+  local meson_options=(
+    -D drivers=all
+    -D installed-tests=false
+  )
+
+  arch-meson $pkgname build "${meson_options[@]}"
+  meson compile -C build
+}
+
+check() {
+  meson test -C build --print-errorlogs
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
